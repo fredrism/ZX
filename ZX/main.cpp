@@ -3,13 +3,13 @@
 #include "glm/glm.hpp"
 #include "glm/common.hpp"
 #include "glm/gtc/quaternion.hpp"
-
+#include "glm/gtx/euler_angles.hpp"
 #include <vector>
 
-const int SCREEN_WIDTH = 640;
-const int SCREEN_HEIGHT = 480;
+const int RENDER_WIDTH = 640;
+const int RENDER_HEIGHT = 480;
 
-constexpr float aspectRatio = (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+constexpr float aspectRatio = (float)RENDER_WIDTH / RENDER_HEIGHT;
 
 struct Plane {
 	glm::vec3 direction;
@@ -88,9 +88,11 @@ struct ZXTransform
 		glm::mat4 matrix(1.0);
 		matrix = glm::translate(matrix, position);
 		matrix = glm::scale(matrix, scale);
-		matrix = glm::rotate(matrix, rotation.x, glm::vec3(1, 0, 0));
+		/*matrix = glm::rotate(matrix, rotation.x, glm::vec3(1, 0, 0));
 		matrix = glm::rotate(matrix, rotation.y, glm::vec3(0, 1 ,0));
-		matrix = glm::rotate(matrix, rotation.z, glm::vec3(0, 0, 1));
+		matrix = glm::rotate(matrix, rotation.z, glm::vec3(0, 0, 1));*/
+
+		matrix = matrix * toQuaternion();
 
 		this->transform = matrix;
 		return matrix;
@@ -98,13 +100,18 @@ struct ZXTransform
 
 	glm::vec3 Forward()
 	{
-		return glm::mat4_cast(toQuaternion()) * glm::vec4(0, 0, -1, 0);
+		return toQuaternion() * glm::vec4(0, 0, -1, 0);
+	}
+
+	glm::vec3 Right()
+	{
+		return toQuaternion() * glm::vec4(1, 0, 0, 0);
 	}
 
 private:
-	glm::quat toQuaternion() const
+	glm::mat4 toQuaternion() const
 	{
-		return glm::angleAxis(rotation.x, glm::vec3(1, 0, 0)) * glm::angleAxis(rotation.y, glm::vec3(0, 1, 0)) * glm::angleAxis(rotation.z, glm::vec3(0, 0, 1));
+		return  glm::orientate4(this->rotation);
 	}
 };
 
@@ -130,8 +137,8 @@ struct ZXCamera
 
 	ZXRay ScreenPointToRay(float x, float y)
 	{
-		float px = (2.0f * (x + 0.5f) / SCREEN_WIDTH - 1.0f) * fieldOfView * aspectRatio;
-		float py = (1.0f - 2.0f * (y + 0.5f) / SCREEN_HEIGHT) * fieldOfView;
+		float px = (2.0f * (x + 0.5f) / RENDER_WIDTH - 1.0f) * fieldOfView * aspectRatio;
+		float py = (1.0f - 2.0f * (y + 0.5f) / RENDER_HEIGHT) * fieldOfView;
 
 		glm::vec4 rayPos = transform.transform * glm::vec4(px, py, -1.0f, 1.0f);
 
@@ -143,31 +150,14 @@ struct ZXCamera
 	}
 };
 
-float Cross2D(glm::vec2 a, glm::vec2 b)
-{
-	return a.x * b.y - a.y * b.x;
-}
-
-float LineLineIntersection(glm::vec2 p1, glm::vec2 p2, glm::vec2 q1, glm::vec2 q2)
-{
-	glm::vec2 r = p2 - p1;
-	glm::vec2 s = q2 - q1;
-
-	return Cross2D(q1 - p1, s / Cross2D(r, s));
-}
-
-bool RayPlaneIntersection(ZXRay ray, Plane p, float& t)
+bool RayPlaneIntersection(ZXRay ray, Plane p, float* t)
 {
 	float d = glm::dot(p.direction, ray.direction);
 	if (glm::abs(d) > 0.0001f)
 	{
-		t = glm::dot(p.center - ray.origin, p.direction) / d;
-		if (t >= 0.0f)
-		{
-			return true;
-		}
+		*t = glm::dot(p.direction, p.center - ray.origin) / d;
+		return *t >= 0;
 	}
-
 	return false;
 }
 
@@ -176,53 +166,91 @@ float SideOf(glm::vec3 point, Plane p)
 	return glm::dot(point - p.center, p.direction);
 }
 
-struct HitInfo
-{
+struct RaycastHit {
 	float t;
+	glm::vec3 normal;
 	glm::vec3 point;
-	Wall info;
 };
-
-HitInfo RayCast(ZXRay ray, Sector* sector)
-{
-	Plane planes[3];
-	for (int i = 0; i < sector->boundary.size(); i++)
-	{
-		//sector->GetBoundaryPlanes(i, planes[0], planes[1], planes[2]);
-		float t = -1;
-		if (RayPlaneIntersection(ray, planes[0], t))
-		{
-			glm::vec3 hitPoint = ray.At(t);
-
-			if (SideOf(hitPoint, planes[1]) > 0 &&
-				SideOf(hitPoint, planes[2]) > 0 &&
-				SideOf(hitPoint, sector->top) > 0 &&
-				SideOf(hitPoint, sector->bottom) > 0)
-			{
-				return {
-					t,
-					hitPoint,
-					sector->walls[i]
-				};
-			}
-		}
-	}
-}
 
 void SetPixel(int x, int y, glm::vec3 color, unsigned char* screenbuffer) 
 {
-	screenbuffer[4 * (x + y * SCREEN_WIDTH) + 0] = 255 * color.r;
-	screenbuffer[4 * (x + y * SCREEN_WIDTH) + 1] = 255 * color.g;
-	screenbuffer[4 * (x + y * SCREEN_WIDTH) + 2] = 255 * color.b;
-	screenbuffer[4 * (x + y * SCREEN_WIDTH) + 3] = 255;
+	color = glm::saturate(color);
+	screenbuffer[4 * (x + y * RENDER_WIDTH) + 0] = 255 * color.r;
+	screenbuffer[4 * (x + y * RENDER_WIDTH) + 1] = 255 * color.g;
+	screenbuffer[4 * (x + y * RENDER_WIDTH) + 2] = 255 * color.b;
+	screenbuffer[4 * (x + y * RENDER_WIDTH) + 3] = 255;
 }
 
 glm::vec3 ComputeDirectLighting(glm::vec3 position, glm::vec3 normal, ZXMaterial& material)
 {
-	glm::vec3 lightPos(0, 2, 0);
-	glm::vec3 lightDir = position - lightPos;
-	float nDotL = glm::dot(lightDir, normal);
-	return material.color * 2.0f * nDotL;
+	glm::vec3 lightPos(10, 1, 10);
+	glm::vec3 lightDir = lightPos - position;
+	float distance = glm::inversesqrt(glm::dot(lightDir, lightDir));
+
+	float nDotL = glm::clamp(glm::dot(glm::normalize(lightDir), normal), 0.0f, 1.0f);
+	
+	glm::vec3 color = (glm::vec3(1, 1, 1) + normal * 0.1f) * 0.7f;
+	return 10.0f * (distance) * color;
+}
+
+bool RaycastSector(Sector* sector, ZXRay ray, RaycastHit& hit)
+{
+	for (int i = 0; i < sector->boundary.size(); i++)
+	{
+		Plane& left = sector->wallPlanes[3 * i];
+		Plane& wall = sector->wallPlanes[3 * i + 1];
+		Plane& right = sector->wallPlanes[3 * i + 2];
+		if (RayPlaneIntersection(ray, wall, &hit.t))
+		{
+			hit.point = ray.At(hit.t);
+
+			if (SideOf(hit.point, left) > 0 &&
+				SideOf(hit.point, right) > 0 &&
+				SideOf(hit.point, sector->top) > 0 &&
+				SideOf(hit.point, sector->bottom) > 0)
+			{
+				hit.normal = wall.direction;
+				return true;
+			}
+		}
+	}
+
+
+	// Need to make sure we pick the right intersection
+	float topDistance = 0, bottomDistance = 0;
+	bool hitFloorOrCeil = false;
+	if (RayPlaneIntersection(ray, sector->top, &topDistance))
+	{
+		hit.point = ray.At(topDistance);
+		hit.normal = sector->top.direction;
+		hitFloorOrCeil = true;
+	}
+	if (RayPlaneIntersection(ray, sector->bottom, &bottomDistance))
+	{
+		if (!hitFloorOrCeil || glm::distance(ray.origin, ray.At(bottomDistance)) < glm::distance(ray.origin, ray.At(topDistance)))
+		{
+			hit.point = ray.At(bottomDistance);
+			hit.normal = sector->bottom.direction;
+			hitFloorOrCeil = true;
+		}
+	}
+	return hitFloorOrCeil;
+}
+
+std::vector<glm::vec3> s_randomOnUnitSphere;
+size_t randomCounter = 0;
+
+
+glm::vec3 IndirectLight(Sector* sector, ZXRay ray)
+{
+	RaycastHit hit;
+	glm::vec3 direct(0.0f, 0.0f, 0.0f);
+	if (RaycastSector(sector, ray, hit))
+	{
+		direct = ComputeDirectLighting(hit.point, hit.normal, sector->materials[0]);
+	}
+
+	return direct;
 }
 
 void Render(Sector* sector, ZXCamera* camera, unsigned char* screenbuffer)
@@ -231,36 +259,13 @@ void Render(Sector* sector, ZXCamera* camera, unsigned char* screenbuffer)
 	ZXRay ray;
 
 
-	for (int y = 0; y < SCREEN_HEIGHT; y++)
+	for (int y = 0; y < RENDER_HEIGHT; y++)
 	{
-		for (int x = 0; x < SCREEN_WIDTH; x++)
+		for (int x = 0; x < RENDER_WIDTH; x++)
 		{
 			ZXRay ray = camera->ScreenPointToRay(x, y);
-			screenbuffer[4 * (x + y * SCREEN_WIDTH) + 0] = 0;
-			screenbuffer[4 * (x + y * SCREEN_WIDTH) + 1] = 0;
-			screenbuffer[4 * (x + y * SCREEN_WIDTH) + 2] = 0;
-			screenbuffer[4 * (x + y * SCREEN_WIDTH) + 3] = 255;
-
-			for (int i = 0; i < sector->boundary.size(); i++)
-			{
-				Plane left = sector->wallPlanes[3 * i];
-				Plane wall = sector->wallPlanes[3 * i + 1];
-				Plane right = sector->wallPlanes[3 * i + 2];
-				float t = -1;
-				if (RayPlaneIntersection(ray, wall, t))
-				{
-					glm::vec3 hitPoint = ray.At(t);
-
-					if (SideOf(hitPoint, left) > 0 &&
-						SideOf(hitPoint, right) > 0 &&
-						SideOf(hitPoint, sector->top) > 0 &&
-						SideOf(hitPoint, sector->bottom) > 0)
-					{
-						glm::vec3 color = ComputeDirectLighting(hitPoint, wall.direction, sector->materials[0]);
-						SetPixel(x, y, color, screenbuffer);
-					}
-				}
-			}
+			glm::vec3 color = IndirectLight(sector, ray);
+			SetPixel(x, y, color, screenbuffer);
 		}
 	}
 }
@@ -319,20 +324,38 @@ private:
 	std::chrono::high_resolution_clock::time_point m_start;
 };
 
+float RandomFloat(float min, float max)
+{
+	float t = (float)GetRandomValue(0, 10000) / 10000.0f;
+	return min + (max - min) * t;
+}
+
 void main()
 {
-	InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "ZX");
-	//SetTargetFPS(60);
+	InitWindow(RENDER_WIDTH, RENDER_HEIGHT, "ZX");
+	SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_MAXIMIZED);
+
+	int screenWidth = GetScreenWidth();
+	int screenHeight = GetScreenHeight();
+
+	// MaximizeWindow();
+	SetTargetFPS(60);
 
 	ZXCamera camera;
 	//camera.transform.position = glm::vec3(0, 0, 0);
 	Sector sector;
-	sector.bottom.center = glm::vec3(0, -1, 0);
-	sector.bottom.direction = glm::vec3(0, 1, 0);
-	sector.top.center = glm::vec3(0, 1, 0);
-	sector.top.direction = glm::vec3(0, -1, 0);
+	sector.bottom.center = glm::vec3(0.0f, 0.0f, 0.0f);
+	sector.bottom.direction = glm::normalize(glm::vec3(0.0f, 1.0f, -0.1f));
+
+	sector.top.center = glm::vec3(0.0f, 5.0f, 0.0f);
+	sector.top.direction = glm::normalize(glm::vec3(0, -1.0f, 0.0f));
 	sector.materials.push_back({
 		{1, 1, 0},
+		1.0f
+	});
+
+	sector.materials.push_back({
+		{1.0f, 1.0f, 0.5f},
 		1.0f
 	});
 
@@ -347,14 +370,28 @@ void main()
 	sector.boundary.push_back(glm::vec3(-20, 0, 20));
 	sector.boundary.push_back(glm::vec3(-30, 0, 0));
 
-	Image image = GenImageColor(SCREEN_WIDTH, SCREEN_HEIGHT, RAYWHITE);
+	Image image = GenImageColor(RENDER_WIDTH, RENDER_HEIGHT, RAYWHITE);
 	Texture2D texture = LoadTextureFromImage(image);
 
-	unsigned char* screenBuffer = new unsigned char[4 * SCREEN_WIDTH * SCREEN_HEIGHT];
+	unsigned char* screenBuffer = new unsigned char[4 * RENDER_WIDTH * RENDER_HEIGHT];
+	bool cursorHidden = true;
+
+	HideCursor();
+	DisableCursor();
 
 	camera.SetFOV(60);
 
 	sector.ComputePlanes();
+
+	for (int i = 0; i < 10; i++)
+	{
+		glm::vec3 dir = glm::vec3(RandomFloat(-10, 10), RandomFloat(-10, 10), RandomFloat(-10, 10));
+		s_randomOnUnitSphere.push_back(glm::normalize(dir));
+	}
+
+	Rectangle srcRect{ 0, 0, RENDER_WIDTH, RENDER_HEIGHT };
+	Rectangle dstRect{ 0, 0, screenWidth, screenHeight };
+
 
 	while (!WindowShouldClose())
 	{
@@ -363,11 +400,11 @@ void main()
 
 		if (IsKeyDown(KEY_A))
 		{
-			camera.transform.rotation.y += 1.0 * dt;
+			camera.transform.position -= camera.transform.Right() * 10.0f * dt;
 		}
 		if (IsKeyDown(KEY_D))
 		{
-			camera.transform.rotation.y -= 1.0 * dt;
+			camera.transform.position += camera.transform.Right() * 10.0f * dt;
 		}
 		if (IsKeyDown(KEY_W))
 		{
@@ -377,15 +414,32 @@ void main()
 		{
 			camera.transform.position -= camera.transform.Forward() * 10.0f * dt;
 		}
+		if (IsKeyDown(KEY_Q)) 
+		{
+			if (cursorHidden)
+			{
+				ShowCursor();
+				EnableCursor();
+			}
+			else 
+			{
+				HideCursor();
+				DisableCursor();
+			}
+		}
+
+		Vector2 mouseDelta = GetMouseDelta();
+		camera.transform.rotation.z -= mouseDelta.x * 0.1f * dt;
+		camera.transform.rotation.x -= mouseDelta.y * 0.1f * dt;
 
 		//std::cout << camera.transform.position.x << ", " << camera.transform.position.y << ", " << camera.transform.position.z << std::endl;
 
 		BeginDrawing();
 		ClearBackground(RAYWHITE);
 		Render(&sector, &camera, screenBuffer);
-		DrawMinimap(&camera, &sector);
 		UpdateTexture(texture, screenBuffer);
-		DrawTexture(texture, 0, 0, WHITE);
+		DrawTexturePro(texture, srcRect, dstRect, {}, 0, WHITE);
+		DrawMinimap(&camera, &sector);
 		EndDrawing();
 	}
 

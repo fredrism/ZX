@@ -11,28 +11,25 @@ const int SCREEN_HEIGHT = 480;
 
 constexpr float aspectRatio = (float)SCREEN_WIDTH / SCREEN_HEIGHT;
 
-struct Plane
-{
+struct Plane {
 	glm::vec3 direction;
 	glm::vec3 center;
 };
 
-struct ZXMaterial
-{
-	Color color;
+struct ZXMaterial {
+	glm::vec3 color;
 	float roughness;
 };
 
-struct Wall
-{
+struct Wall {
 	unsigned int materialId = 0;
 	int portal = -1;
 };
 
-struct Sector 
-{
+struct Sector {
 	std::vector<glm::vec3> boundary;
 	std::vector<Wall> walls;
+	std::vector<Plane> wallPlanes;
 	std::vector<ZXMaterial> materials;
 
 	Wall topInfo;
@@ -45,22 +42,29 @@ struct Sector
 		return boundary[index % boundary.size()];
 	}
 
-	void GetBoundaryPlanes(unsigned int index, Plane& wall, Plane& left, Plane& right)
-	{
-		glm::vec3 p0 = GetPoint(index);
-		glm::vec3 p1 = GetPoint(index + 1.0f);
+	void ComputePlanes() {
+		for (int i = 0; i < boundary.size(); i++) {
+			glm::vec3 p0 = GetPoint(i);
+			glm::vec3 p1 = GetPoint(i + 1);
 
-		glm::vec3 dir = glm::normalize(p1 - p0);
-		glm::vec3 normal = glm::cross(dir, glm::vec3(0.0f, 1.0f, 0.0f));
+			glm::vec3 dir = glm::normalize(p1 - p0);
+			glm::vec3 normal = glm::cross(dir, glm::vec3(0.0f, 1.0f, 0.0f));
 
-		wall.center = p0;
-		wall.direction = normal;
+			Plane wall, left, right;
+			
+			wall.center = p0;
+			wall.direction = normal;
 
-		left.center = p0;
-		left.direction = dir;
+			left.center = p0;
+			left.direction = dir;
 
-		right.center = p1;
-		right.direction = -dir;
+			right.center = p1;
+			right.direction = -dir;
+
+			wallPlanes.push_back(left);
+			wallPlanes.push_back(wall);
+			wallPlanes.push_back(right);
+		}
 	}
 };
 
@@ -120,18 +124,20 @@ struct ZXCamera
 	ZXTransform transform;
 	float fieldOfView = 60;
 
+	void SetFOV(float fov) {
+		fieldOfView = glm::tan(glm::radians(fieldOfView * 0.5f));
+	}
+
 	ZXRay ScreenPointToRay(float x, float y)
 	{
-		float fov = glm::tan(glm::radians(fieldOfView * 0.5f));
-		float px = (2.0f * (x + 0.5f) / SCREEN_WIDTH - 1.0f) * fov * aspectRatio;
-		float py = (1.0f - 2.0f * (y + 0.5f) / SCREEN_HEIGHT) * fov;
+		float px = (2.0f * (x + 0.5f) / SCREEN_WIDTH - 1.0f) * fieldOfView * aspectRatio;
+		float py = (1.0f - 2.0f * (y + 0.5f) / SCREEN_HEIGHT) * fieldOfView;
 
-		glm::vec4 rayOrigin = transform.transform * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 		glm::vec4 rayPos = transform.transform * glm::vec4(px, py, -1.0f, 1.0f);
 
 		ZXRay ray;
-		ray.origin = rayOrigin;
-		ray.direction = rayPos - rayOrigin;
+		ray.origin = transform.position;
+		ray.direction = glm::vec3(rayPos) - transform.position;
 		ray.direction = glm::normalize(ray.direction);
 		return ray;
 	}
@@ -182,7 +188,7 @@ HitInfo RayCast(ZXRay ray, Sector* sector)
 	Plane planes[3];
 	for (int i = 0; i < sector->boundary.size(); i++)
 	{
-		sector->GetBoundaryPlanes(i, planes[0], planes[1], planes[2]);
+		//sector->GetBoundaryPlanes(i, planes[0], planes[1], planes[2]);
 		float t = -1;
 		if (RayPlaneIntersection(ray, planes[0], t))
 		{
@@ -203,46 +209,62 @@ HitInfo RayCast(ZXRay ray, Sector* sector)
 	}
 }
 
-void Render(Sector* sector, ZXCamera* camera)
+void SetPixel(int x, int y, glm::vec3 color, unsigned char* screenbuffer) 
+{
+	screenbuffer[4 * (x + y * SCREEN_WIDTH) + 0] = 255 * color.r;
+	screenbuffer[4 * (x + y * SCREEN_WIDTH) + 1] = 255 * color.g;
+	screenbuffer[4 * (x + y * SCREEN_WIDTH) + 2] = 255 * color.b;
+	screenbuffer[4 * (x + y * SCREEN_WIDTH) + 3] = 255;
+}
+
+glm::vec3 ComputeDirectLighting(glm::vec3 position, glm::vec3 normal, ZXMaterial& material)
+{
+	glm::vec3 lightPos(0, 2, 0);
+	glm::vec3 lightDir = position - lightPos;
+	float nDotL = glm::dot(lightDir, normal);
+	return material.color * 2.0f * nDotL;
+}
+
+void Render(Sector* sector, ZXCamera* camera, unsigned char* screenbuffer)
 {
 	camera->transform.localToWorld();
-
-	Color roof{ 255, 0, 0, 255 };
-	Color sky{ 0, 255, 0, 255 };
 	ZXRay ray;
 
-	Plane planes[3];
-	Color colors[2] = {
-		{128, 90, 144, 255},
-		{23, 44, 200, 255}
-	};
 
 	for (int y = 0; y < SCREEN_HEIGHT; y++)
 	{
 		for (int x = 0; x < SCREEN_WIDTH; x++)
 		{
 			ZXRay ray = camera->ScreenPointToRay(x, y);
+			screenbuffer[4 * (x + y * SCREEN_WIDTH) + 0] = 0;
+			screenbuffer[4 * (x + y * SCREEN_WIDTH) + 1] = 0;
+			screenbuffer[4 * (x + y * SCREEN_WIDTH) + 2] = 0;
+			screenbuffer[4 * (x + y * SCREEN_WIDTH) + 3] = 255;
 
 			for (int i = 0; i < sector->boundary.size(); i++)
 			{
-				sector->GetBoundaryPlanes(i, planes[0], planes[1], planes[2]);
+				Plane left = sector->wallPlanes[3 * i];
+				Plane wall = sector->wallPlanes[3 * i + 1];
+				Plane right = sector->wallPlanes[3 * i + 2];
 				float t = -1;
-				if (RayPlaneIntersection(ray, planes[0], t))
+				if (RayPlaneIntersection(ray, wall, t))
 				{
 					glm::vec3 hitPoint = ray.At(t);
 
-					if (SideOf(hitPoint, planes[1]) > 0 &&
-						SideOf(hitPoint, planes[2]) > 0 &&
+					if (SideOf(hitPoint, left) > 0 &&
+						SideOf(hitPoint, right) > 0 &&
 						SideOf(hitPoint, sector->top) > 0 &&
 						SideOf(hitPoint, sector->bottom) > 0)
 					{
-						DrawPixel(x, y, colors[i % 2]);
+						glm::vec3 color = ComputeDirectLighting(hitPoint, wall.direction, sector->materials[0]);
+						SetPixel(x, y, color, screenbuffer);
 					}
 				}
 			}
 		}
 	}
 }
+
 
 void DrawMinimap(ZXCamera* camera, Sector* sector)
 {
@@ -264,10 +286,43 @@ void DrawMinimap(ZXCamera* camera, Sector* sector)
 	DrawLine(offset.x, offset.y, offset.x + 20 * lookDir.x, offset.y + 20 * lookDir.z, { 255, 0, 0, 255 });
 }
 
+#include <chrono>
+class ScopedProfiler {
+public:
+	ScopedProfiler() {
+		this->m_start = std::chrono::high_resolution_clock::now();
+	}
+
+	~ScopedProfiler() {
+		const auto end = std::chrono::high_resolution_clock::now();
+
+		std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(end - m_start).count() << "ms" << std::endl;
+	}
+
+private:
+	std::chrono::high_resolution_clock::time_point m_start;
+};
+
+class FPSProfiler {
+public:
+	FPSProfiler() {
+		this->m_start = std::chrono::high_resolution_clock::now();
+	}
+
+	~FPSProfiler() {
+		const auto end = std::chrono::high_resolution_clock::now();
+
+		std::cout << 1000.0 / std::chrono::duration_cast<std::chrono::milliseconds>(end - m_start).count() << "fps" << std::endl;
+	}
+
+private:
+	std::chrono::high_resolution_clock::time_point m_start;
+};
+
 void main()
 {
 	InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "ZX");
-	SetTargetFPS(60);
+	//SetTargetFPS(60);
 
 	ZXCamera camera;
 	//camera.transform.position = glm::vec3(0, 0, 0);
@@ -277,7 +332,7 @@ void main()
 	sector.top.center = glm::vec3(0, 1, 0);
 	sector.top.direction = glm::vec3(0, -1, 0);
 	sector.materials.push_back({
-		{71, 63, 78, 255},
+		{1, 1, 0},
 		1.0f
 	});
 
@@ -290,9 +345,20 @@ void main()
 	sector.boundary.push_back(glm::vec3(20, 0, -20));
 	sector.boundary.push_back(glm::vec3(20, 0, 20));
 	sector.boundary.push_back(glm::vec3(-20, 0, 20));
+	sector.boundary.push_back(glm::vec3(-30, 0, 0));
+
+	Image image = GenImageColor(SCREEN_WIDTH, SCREEN_HEIGHT, RAYWHITE);
+	Texture2D texture = LoadTextureFromImage(image);
+
+	unsigned char* screenBuffer = new unsigned char[4 * SCREEN_WIDTH * SCREEN_HEIGHT];
+
+	camera.SetFOV(60);
+
+	sector.ComputePlanes();
 
 	while (!WindowShouldClose())
 	{
+		FPSProfiler profiler;
 		float dt = 1 / 60.0;
 
 		if (IsKeyDown(KEY_A))
@@ -316,10 +382,13 @@ void main()
 
 		BeginDrawing();
 		ClearBackground(RAYWHITE);
-		Render(&sector, &camera);
+		Render(&sector, &camera, screenBuffer);
 		DrawMinimap(&camera, &sector);
+		UpdateTexture(texture, screenBuffer);
+		DrawTexture(texture, 0, 0, WHITE);
 		EndDrawing();
 	}
 
 	CloseWindow();
 }
+

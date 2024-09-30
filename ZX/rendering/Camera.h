@@ -1,6 +1,6 @@
 #pragma once
 #include "../math/Ray.h"
-#include "Transform.h"
+#include "../entities/Transform.h"
 
 const int SCREEN_WIDTH = 640;
 const int SCREEN_HEIGHT = 480;

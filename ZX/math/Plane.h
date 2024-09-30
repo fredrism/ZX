@@ -5,6 +5,11 @@
 class Plane
 {
 public:
+	Plane()
+	{
+		
+	}
+
 	Plane(glm::vec3 center, glm::vec3 normal)
 	{
 		this->center = center;
@@ -18,7 +23,7 @@ public:
 		this->normal = normal;
 	}
 
-	bool RayPlaneIntersection(Ray ray, float& t)
+	bool Raycast(Ray ray, float& t) const
 	{
 		float d = glm::dot(normal, ray.direction);
 		if (glm::abs(d) > 0.0001f)
@@ -33,7 +38,8 @@ public:
 		return false;
 	}
 
-	float SideOf(glm::vec3 point)
+
+	float SideOf(glm::vec3 point) const
 	{
 		return glm::dot(point - center, normal);
 	}
